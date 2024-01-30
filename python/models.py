@@ -6,6 +6,8 @@ from gurobipy import GRB
 
 import numpy as np
 
+from clustering import apriori_clustering
+
 
 class BaseModel(object):
     """
@@ -182,7 +184,6 @@ class TwoClustersMIP(BaseModel):
         """Instantiation of the MIP Variables - To be completed."""
         # create a model
         model = gp.Model("MIP")
-
         return model
 
     def fit(self, X, Y):
@@ -200,63 +201,31 @@ class TwoClustersMIP(BaseModel):
         n_pieces = self.n_pieces
 
         # define the variables of the MIP
-        # define a vector of alpha_i_l of size n_features * n_pieces, they will be the first variables of the MIP
-        # alpha_i_l = np.zeros((n_features, n_pieces))
-
-        # define a vector of sigma_j of size 2 * n_samples, they will be the second variables of the MIP
-        # sigma_j = np.zeros((2, n_samples))
-
-        # x = self.model.addVars(alpha_i_l, sigma_j, vtype=GRB.FLOAT, name="x")
-
         u = {}
         for k in range(self.n_clusters):
             for i in range(self.n_features):
                 for l in range(self.n_pieces):
-                    u[k, i, l] = model.addVar(lb=0, ub=1, vtype=GRB.CONTINUOUS, name=f"u_{k}{i}{l}")
+                    u[k, i, l] = self.model.addVar(lb=0, ub=1, vtype=GRB.CONTINUOUS, name=f"u_{k}{i}{l}")
 
         z = {}
         for k in range(self.n_clusters):
-            for j in range(len(X)):
-                z[j, k] = model.addVar(vtype=GRB.BINARY, name=f"z_{j}_{k}")
+            for j in range(n_samples):
+                z[j, k] = self.model.addVar(vtype=GRB.BINARY, name=f"z_{j}_{k}")
 
-        sigma_plus = model.addVar(lb=0, vtype=GRB.CONTINUOUS, name="sigma_plus") 
-        sigma_minus = model.addVar(lb=0, vtype=GRB.CONTINUOUS, name="sigma_minus")
+        sigma_plus = self.model.addVar(lb=0, vtype=GRB.CONTINUOUS, name="sigma_plus") 
+        sigma_minus = self.model.addVar(lb=0, vtype=GRB.CONTINUOUS, name="sigma_minus")
 
         # Constraints fonction de décision croissantes 
         for i in range(self.n_features):
             for k in range(self.n_clusters):
                 for l in range(self.n_pieces - 1):
-                    model.addConstr(u[k, i, l] <= u[k, i, l + 1])
+                    self.model.addConstr(u[k, i, l] <= u[k, i, l + 1])
         
         #Contrainte d'égalite <-> préférence
 
-        for j in len(X):
-            model.addConstr(np.sum([z[j, k] for k in range(self.n_clusters)])== 1)
+        for j in range(n_samples):
+            self.model.addConstr(np.sum([z[j, k] for k in range(self.n_clusters)])==1)
 
-        # alpha_i_l = self.model.addMVar(
-        #     shape=(n_features, n_pieces), 
-        #     lb = 0.0,
-        #     vtype=GRB.CONTINUOUS, 
-        #     name="alpha_i_l"
-        # )
-        # sigma_j = self.model.addMVar(
-        #     shape=(2, n_samples), 
-        #     vtype=GRB.CONTINUOUS, 
-        #     name="sigma_j"
-        # )
-
-        # alpha_i_l = self.model.addVars(
-        #     ((i,l) for i in range(n_features) for l in range(n_pieces)),
-        #     vtype=GRB.CONTINUOUS, 
-        #     name="alpha_i_l",
-        #     lb=0.0,
-        #     ub=1.0
-        # )
-        # sigma_j = self.model.addVars(
-        #     ((k,j) for k in [0, 1] for j in range(n_samples)),
-        #     vtype=GRB.CONTINUOUS, 
-        #     name="sigma_j"
-        # )
 
         # define some preliminary useful coefficients 
         # define the min_i and max_i for each feature i, computed with X and Y, the value will be later used to calculate the score function
@@ -345,12 +314,12 @@ from data import Dataloader
 import metrics
 
 
-data_loader = Dataloader("data\dataset_4") # Specify path to the dataset you want to load
-X, Y = data_loader.load()
+# data_loader = Dataloader("../data\dataset_4") # Specify path to the dataset you want to load
+# X, Y = data_loader.load()
 
-# model = RandomExampleModel() # Instantiation of the model with hyperparameters, if needed
-model = TwoClustersMIP(n_pieces=5, n_clusters=1)
-model.fit(X, Y) 
+# # model = RandomExampleModel() # Instantiation of the model with hyperparameters, if needed
+# model = TwoClustersMIP(n_pieces=5, n_clusters=1)
+# model.fit(X, Y) 
 
 
 
@@ -360,16 +329,25 @@ class HeuristicModel(BaseModel):
     You have to encapsulate your code within this class that will be called for evaluation.
     """
 
-    def __init__(self):
+    def __init__(self, n_pieces, n_clusters):
         """Initialization of the Heuristic Model.
         """
         self.seed = 123
         self.models = self.instantiate()
+        self.n_clusters = n_clusters
 
     def instantiate(self):
         """Instantiation of the MIP Variables"""
-        # To be completed
+        model = gp.Model("MIP")
         return
+
+    def instantiate_clusters(self, X, Y):
+        self.clusters = dict()
+        labels = apriori_clustering(X, Y, self.n_clusters)
+        for k in range(self.n_clusters):
+            self.clusters[k] = dict()
+            self.clusters[k]["X"] = X[labels == k]
+            self.clusters[k]["Y"] = Y[labels == k]
 
     def fit(self, X, Y):
         """Estimation of the parameters - To be completed.
@@ -381,7 +359,57 @@ class HeuristicModel(BaseModel):
         Y: np.ndarray
             (n_samples, n_features) features of unchosen elements
         """
-        # To be completed
+
+        # Strategy: 
+        # 1. KMeans to initialize the clusters, 
+        # 2. Tune utilities for each cluster and evaluate
+        # 3. Reorganize clusters based on distances, 
+        # 4. Repeat until convergence
+
+        n_samples = X.shape[0]
+        n_features = X.shape[1]
+        n_pieces = self.n_pieces
+
+        # define the variables of the MIP
+        u = {}
+        for k in range(self.n_clusters):
+            for i in range(self.n_features):
+                for l in range(self.n_pieces):
+                    u[k, i, l] = self.model.addVar(lb=0, ub=1, vtype=GRB.CONTINUOUS, name=f"u_{k}{i}{l}")
+
+        z = {}
+        for k in range(self.n_clusters):
+            for j in range(n_samples):
+                z[j, k] = self.model.addVar(vtype=GRB.BINARY, name=f"z_{j}_{k}")
+
+        sigma_plus = self.model.addVar(lb=0, vtype=GRB.CONTINUOUS, name="sigma_plus") 
+        sigma_minus = self.model.addVar(lb=0, vtype=GRB.CONTINUOUS, name="sigma_minus")
+
+        # Constraints fonction de décision croissantes 
+        for i in range(self.n_features):
+            for k in range(self.n_clusters):
+                for l in range(self.n_pieces - 1):
+                    self.model.addConstr(u[k, i, l] <= u[k, i, l + 1])
+        
+        #Contrainte d'égalite <-> préférence
+
+        for j in range(n_samples):
+            self.model.addConstr(np.sum([z[j, k] for k in range(self.n_clusters)])==1)
+
+
+        # define some preliminary useful coefficients 
+        # define the min_i and max_i for each feature i, computed with X and Y, the value will be later used to calculate the score function
+        min_i = np.zeros(n_features)
+        max_i = np.zeros(n_features)
+        for i in range(n_features):
+            min_i[i] = min(min(X[:, i]), min(Y[:, i]))
+            max_i[i] = max(max(X[:, i]), max(Y[:, i]))
+
+        # define the intervals boundaries x_i_l for each feature i, and l from 0 to n_pieces, computed with min_i and max_i
+        x_i_l = np.zeros((n_features, n_pieces+1))
+        for i in range(n_features):
+            for l in range(n_pieces+1):
+                x_i_l[i, l] = min_i[i] + l * (max_i[i] - min_i[i]) / n_pieces
         return
 
     def predict_utility(self, X):
