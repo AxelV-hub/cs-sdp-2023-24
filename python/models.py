@@ -199,125 +199,95 @@ class TwoClustersMIP(BaseModel):
         n_features = X.shape[1]
         n_pieces = self.n_pieces
 
-        # define the variables of the MIP
-        # define a vector of alpha_i_l of size n_features * n_pieces, they will be the first variables of the MIP
-        # alpha_i_l = np.zeros((n_features, n_pieces))
-
-        # define a vector of sigma_j of size 2 * n_samples, they will be the second variables of the MIP
-        # sigma_j = np.zeros((2, n_samples))
-
-        # x = self.model.addVars(alpha_i_l, sigma_j, vtype=GRB.FLOAT, name="x")
-
+        # We create the variable corresponding to the values of the utilies functions that we want to find
         u = {}
-        for k in range(self.n_clusters):
-            for i in range(self.n_features):
-                for l in range(self.n_pieces):
-                    u[k, i, l] = model.addVar(lb=0, ub=1, vtype=GRB.CONTINUOUS, name=f"u_{k}{i}{l}")
+        for i in range(n_features):
+            for l in range(n_pieces+1):
+                u[i, l] = self.model.addVar(lb=0, ub=1, vtype=GRB.CONTINUOUS, name=f"u_{i}{l}")
 
-        z = {}
-        for k in range(self.n_clusters):
-            for j in range(len(X)):
-                z[j, k] = model.addVar(vtype=GRB.BINARY, name=f"z_{j}_{k}")
+        # We create the variable corresponding to the clusters, the value is 1 if it is in the corresponding cluster
+        # z = {}
+        # for k in range(self.n_clusters):
+        #     for j in range(len(X)):
+        #         z[j, k] = model.addVar(vtype=GRB.BINARY, name=f"z_{j}_{k}")
 
-        sigma_plus = model.addVar(lb=0, vtype=GRB.CONTINUOUS, name="sigma_plus") 
-        sigma_minus = model.addVar(lb=0, vtype=GRB.CONTINUOUS, name="sigma_minus")
+        # We create the variables of surestimation and underestimation of the score function, that we want to minimize
+        sigma_plus_x = {}
+        sigma_minus_x = {}
+        sigma_plus_y = {}
+        sigma_minus_y = {}
+        for j in range(n_samples):
+            sigma_plus_x[j] = self.model.addVar(lb=0, vtype=GRB.CONTINUOUS, name=f"sigma_plus_x_{j}")
+            sigma_minus_x[j] = self.model.addVar(lb=0, vtype=GRB.CONTINUOUS, name=f"sigma_minus_x_{j}")
+            sigma_plus_y[j] = self.model.addVar(lb=0, vtype=GRB.CONTINUOUS, name=f"sigma_plus_y_{j}")
+            sigma_minus_y[j] = self.model.addVar(lb=0, vtype=GRB.CONTINUOUS, name=f"sigma_minus_y_{j}")
 
-        # Constraints fonction de décision croissantes 
-        for i in range(self.n_features):
-            for k in range(self.n_clusters):
-                for l in range(self.n_pieces - 1):
-                    model.addConstr(u[k, i, l] <= u[k, i, l + 1])
+        # We add the constraint : the utility functions are increasing
+        for i in range(n_features):
+            for l in range(n_pieces - 1):
+                self.model.addConstr(u[i, l] <= u[i, l+1])
         
-        #Contrainte d'égalite <-> préférence
+        # Constraint for the clusters
+        # for j in len(X):
+        #     model.addConstr(np.sum([z[j, k] == 1 for k in range(self.n_clusters)]))
 
-        for j in len(X):
-            model.addConstr(np.sum([z[j, k] for k in range(self.n_clusters)])== 1)
-
-        # alpha_i_l = self.model.addMVar(
-        #     shape=(n_features, n_pieces), 
-        #     lb = 0.0,
-        #     vtype=GRB.CONTINUOUS, 
-        #     name="alpha_i_l"
-        # )
-        # sigma_j = self.model.addMVar(
-        #     shape=(2, n_samples), 
-        #     vtype=GRB.CONTINUOUS, 
-        #     name="sigma_j"
-        # )
-
-        # alpha_i_l = self.model.addVars(
-        #     ((i,l) for i in range(n_features) for l in range(n_pieces)),
-        #     vtype=GRB.CONTINUOUS, 
-        #     name="alpha_i_l",
-        #     lb=0.0,
-        #     ub=1.0
-        # )
-        # sigma_j = self.model.addVars(
-        #     ((k,j) for k in [0, 1] for j in range(n_samples)),
-        #     vtype=GRB.CONTINUOUS, 
-        #     name="sigma_j"
-        # )
-
-        # define some preliminary useful coefficients 
-        # define the min_i and max_i for each feature i, computed with X and Y, the value will be later used to calculate the score function
+        # Define some preliminary useful coefficients before adding the constraint of preference with the score function
+        # 1) define the min_i and max_i for each feature i, computed with X and Y, the value will be later used to calculate the score function
         min_i = np.zeros(n_features)
         max_i = np.zeros(n_features)
         for i in range(n_features):
             min_i[i] = min(min(X[:, i]), min(Y[:, i]))
             max_i[i] = max(max(X[:, i]), max(Y[:, i]))
 
-        # define the intervals boundaries x_i_l for each feature i, and l from 0 to n_pieces, computed with min_i and max_i
-        x_i_l = np.zeros((n_features, n_pieces+1))
+        # 2) define the intervals boundaries x for each feature i, and l from 0 to n_pieces, computed with min_i and max_i
+        x = np.zeros((n_features, n_pieces+1))
         for i in range(n_features):
             for l in range(n_pieces+1):
-                x_i_l[i, l] = min_i[i] + l * (max_i[i] - min_i[i]) / n_pieces
+                x[i, l] = min_i[i] + l * (max_i[i] - min_i[i]) / n_pieces
 
-        # define the score function, based on the alpha_i_l and max_i and min_i
-        def score_function(x_i, alpha_i_l):
-            # define the interval l_i of x_i_l in which x_i is located
-            l_i = np.zeros(n_features)
+        # Define the preference constraint, for each sample and for each feature
+        for j in range(n_samples):
             for i in range(n_features):
-                l_i[i] = int(n_pieces * (x_i - min_i[i]) / (max_i[i] - min_i[i]))  # value of l_i between 0 and n_pieces
+                l_x = int(n_pieces * (X[j,i] - min_i[i]) / (max_i[i] - min_i[i]))  # define the part of the utility function it is on, value of l between 0 and n_pieces
+                l_y = int(n_pieces * (Y[j,i] - min_i[i]) / (max_i[i] - min_i[i]))  
+                if l_x == 0 or l_x == n_pieces:
+                    if l_y == 0 or l_y == n_pieces:
+                        score_x = min_i[i] if l_x == 0 else max_i[i]
+                        score_y = min_i[i] if l_y == 0 else max_i[i]
+                        self.model.addConstr(score_x + sigma_plus_x[j] - sigma_minus_x[j] >= score_y + sigma_plus_y[j] - sigma_minus_y[j])
+                    else:
+                        score_x = min_i[i] if l_x == 0 else max_i[i]
+                        coef_y = (Y[j,i] - x[i, l_y]) / (x[i, l_y+1] - x[i, l_y])
+                        self.model.addConstr(score_x + sigma_plus_x[j] - sigma_minus_x[j] >= gp.quicksum(u[i, l_y] +  coef_y * (u[i, l_y+1] - u[i, l_y]) for i in range(n_features)) + sigma_plus_y[j] - sigma_minus_y[j])
+                elif l_y == 0 or l_y == n_pieces:
+                    score_y = min_i[i] if l_y == 0 else max_i[i]
+                    coef_x = (X[j,i] - x[i, l_x]) / (x[i, l_x+1] - x[i, l_x])
+                    self.model.addConstr(gp.quicksum(u[i, l_x] +  coef_x * (u[i, l_x+1] - u[i, l_x]) for i in range(n_features)) + sigma_plus_x[j] - sigma_minus_x[j] >= score_y + sigma_plus_y[j] - sigma_minus_y[j])
+                else:
+                    coef_x = (X[j,i] - x[i, l_x]) / (x[i, l_x+1] - x[i, l_x])
+                    coef_y = (Y[j,i] - x[i, l_y]) / (x[i, l_y+1] - x[i, l_y])
+                    self.model.addConstr(gp.quicksum(u[i, l_x] +  coef_x * (u[i, l_x+1] - u[i, l_x]) for i in range(n_features)) + sigma_plus_x[j] - sigma_minus_x[j] >= gp.quicksum(u[i, l_y] +  coef_y * (u[i, l_y+1] - u[i, l_y]) for i in range(n_features)) + sigma_plus_y[j] - sigma_minus_y[j])
 
-            # define the score function for each feature i 
-            score = 0
-            for i in range(n_features):
-                score += alpha_i_l[i, l_i[i]] + (x_i - x_i_l[i, l_i]) / (x_i_l[i, l_i+1] - x_i_l[i, l_i]) * (alpha_i_l[i, l_i[i]+1] - alpha_i_l[i, l_i[i]])
+        # Ading last constraint: the sum of the max values of u is equal to 1
+        self.model.addConstr(gp.quicksum(u[i, n_pieces] for i in range(n_features)) == 1)
 
-            return score
-
-        # define the constraints of the MIP
-        # constraint 1: the sum of the alpha_i_l over i with l fixed at n_pieces is equal to 1
-        self.model.addConstr(gp.quicksum(alpha_i_l[t, n_pieces] for t in range(n_samples)) == 1)
-
-        # constraint 2: alpha_i_l is between 0 and 1 for all i and l
-        # self.model.addConstrs(alpha_i_l[i, l] >= 0 for i in range(n_features) for l in range(n_pieces))
-
-        # constraint 3: alpha_i_l[i, l] <= alpha_i_l[i, l+1] for all i and l
-        self.model.addConstrs(alpha_i_l[i, l] <= alpha_i_l[i, l+1] for i in range(n_features) for l in range(n_pieces))
-
-        # constraint 4: for each pair of X[j],Y[j], score_function(X[j]) + sigma_j[0, j] >= score_function(Y[j]) + sigma_j[1, j]
-        self.model.addConstrs(score_function(X[j,:], alpha_i_l) + sigma_j[0, j] >= score_function(Y[j,:], alpha_i_l) + sigma_j[1, j] for j in range(n_samples))
-
-        # define the objective function of the MIP
-        # objective function: minimize the sum of abs(sigma_j)
-        self.model.setObjective(gp.quicksum(abs(sigma_j[k,j]) for k in [0,1] for j in range(n_samples)), GRB.MINIMIZE)
+        # Define the objective function of the MIP: minimize the sum of the underestimation and overestimation of the score function
+        self.model.setObjective(gp.quicksum(sigma_minus_x[j] + sigma_plus_x[j] + sigma_minus_y[j] + sigma_plus_y[j] for j in range(n_samples)), GRB.MINIMIZE)
 
         # optimize the model
         self.model.optimize()
 
-        # get the optimal values of alpha_i_l 
+        # get the optimal values of u 
         if self.model.status == GRB.OPTIMAL:
             print('Optimal found')
-            alpha_i_l_opt = np.zeros((n_features, n_pieces))
-            sigma_j_opt = np.zeros((2, n_samples))
+            u_opt = np.zeros((n_features, n_pieces))
             for i in range(n_features):
                 for l in range(n_pieces):
-                    alpha_i_l_opt[i, l] = x[i, l].x
+                    u_opt[i, l] = u[i, l].x
         else:
             print('No solution')
 
-        return alpha_i_l_opt
+        return u_opt
 
 
     def predict_utility(self, X):
@@ -349,8 +319,8 @@ data_loader = Dataloader("data\dataset_4") # Specify path to the dataset you wan
 X, Y = data_loader.load()
 
 # model = RandomExampleModel() # Instantiation of the model with hyperparameters, if needed
-model = TwoClustersMIP(n_pieces=5, n_clusters=1)
-model.fit(X, Y) 
+model_zerocluster = TwoClustersMIP(n_pieces=5, n_clusters=1)
+model_zerocluster.fit(X, Y) 
 
 
 
