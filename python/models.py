@@ -233,13 +233,18 @@ class TwoClustersMIP(BaseModel):
         for j in range(n_samples):
             self.model.addConstr(gp.quicksum(z[j, k] for k in range(self.n_clusters)) >= 1)
 
+        # Define the borns of the utility functions at the beginning
+        for i in range(n_features):
+            for k in range(self.n_clusters):
+                self.model.addConstr(u[i, 0, k] == 0)
+
         # Define some preliminary useful coefficients before adding the constraint of preference with the score function
         # 1) define the min_i and max_i for each feature i, computed with X and Y, the value will be later used to calculate the score function
         min_i = np.zeros(n_features)
-        max_i = np.zeros(n_features)
-        for i in range(n_features):
-            min_i[i] = min(min(X[:, i]), min(Y[:, i]))
-            max_i[i] = max(max(X[:, i]), max(Y[:, i]))
+        max_i = np.ones(n_features)
+        # for i in range(n_features):
+        #     min_i[i] = min(min(X[:, i]), min(Y[:, i]))
+        #     max_i[i] = max(max(X[:, i]), max(Y[:, i]))
 
         # 2) define the intervals boundaries x for each feature i, and l from 0 to n_pieces, computed with min_i and max_i
         x = np.zeros((n_features, n_pieces+1))
@@ -277,35 +282,44 @@ class TwoClustersMIP(BaseModel):
                 l_x[i,j] = min(int(n_pieces * (X[j,i] - min_i[i]) / (max_i[i] - min_i[i])), n_pieces-1)
                 l_y[i,j] = min(int(n_pieces * (Y[j,i] - min_i[i]) / (max_i[i] - min_i[i])), n_pieces-1)
         
-        for j in range(n_samples):
-            for k in range(self.n_clusters):
-                self.model.addConstr(
-                    z[j, k] *
-                    (gp.quicksum(u[i, l_x[i,j], k] + (X[j,i] - x[i, l_x[i,j]]) / (x[i, l_x[i,j]+1] - x[i, l_x[i,j]]) * (u[i, l_x[i,j]+1, k] - u[i, l_x[i,j], k]) for i in range(n_features)) +
-                    sigma_plus_y[j] - sigma_minus_y[j]) >= 
-                    z[j, k] *
-                    (gp.quicksum(u[i, l_y[i,j], k] + (Y[j,i] - x[i, l_y[i,j]]) / (x[i, l_y[i,j]+1] - x[i, l_y[i,j]]) * (u[i, l_y[i,j]+1, k] - u[i, l_y[i,j], k]) for i in range(n_features)) +
-                    sigma_plus_y[j] - sigma_minus_y[j])
-                    )
+        # for j in range(n_samples):
+        #     for k in range(self.n_clusters):
+        #         self.model.addConstr(
+        #             z[j, k] *
+        #             (gp.quicksum(u[i, l_x[i,j], k] + (X[j,i] - x[i, l_x[i,j]]) / (x[i, l_x[i,j]+1] - x[i, l_x[i,j]]) * (u[i, l_x[i,j]+1, k] - u[i, l_x[i,j], k]) for i in range(n_features)) +
+        #             sigma_plus_x[j] - sigma_minus_x[j]) >= 
+        #             z[j, k] *
+        #             (gp.quicksum(u[i, l_y[i,j], k] + (Y[j,i] - x[i, l_y[i,j]]) / (x[i, l_y[i,j]+1] - x[i, l_y[i,j]]) * (u[i, l_y[i,j]+1, k] - u[i, l_y[i,j], k]) for i in range(n_features)) +
+        #             sigma_plus_y[j] - sigma_minus_y[j])
+        #             )
 
         # Adding constraint to force z to have the value 1 if X_j will be in the cluster k
         Maj = 10
         for j in range(n_samples):
             for k in range(self.n_clusters):
                 self.model.addConstr(
-                    gp.quicksum(u[i, l_x[i,j], k] + (X[j,i] - x[i, l_x[i,j]]) / (x[i, l_x[i,j]+1] - x[i, l_x[i,j]]) * (u[i, l_x[i,j]+1, k] - u[i, l_x[i,j], k]) for i in range(n_features)) - 
-                    gp.quicksum(u[i, l_y[i,j], k] + (Y[j,i] - x[i, l_y[i,j]]) / (x[i, l_y[i,j]+1] - x[i, l_y[i,j]]) * (u[i, l_y[i,j]+1, k] - u[i, l_y[i,j], k]) for i in range(n_features)) <= 
+                    (gp.quicksum(u[i, l_x[i,j], k] + (X[j,i] - x[i, l_x[i,j]]) / (x[i, l_x[i,j]+1] - x[i, l_x[i,j]]) * (u[i, l_x[i,j]+1, k] - u[i, l_x[i,j], k]) for i in range(n_features)) +
+                    sigma_plus_x[j] - sigma_minus_x[j]) - 
+                    (gp.quicksum(u[i, l_y[i,j], k] + (Y[j,i] - x[i, l_y[i,j]]) / (x[i, l_y[i,j]+1] - x[i, l_y[i,j]]) * (u[i, l_y[i,j]+1, k] - u[i, l_y[i,j], k]) for i in range(n_features)) +
+                    sigma_plus_y[j] - sigma_minus_y[j]) <= 
                     Maj * z[j, k]
                 )
                 self.model.addConstr(
-                    gp.quicksum(u[i, l_x[i,j], k] + (X[j,i] - x[i, l_x[i,j]]) / (x[i, l_x[i,j]+1] - x[i, l_x[i,j]]) * (u[i, l_x[i,j]+1, k] - u[i, l_x[i,j], k]) for i in range(n_features)) -
-                    gp.quicksum(u[i, l_y[i,j], k] + (Y[j,i] - x[i, l_y[i,j]]) / (x[i, l_y[i,j]+1] - x[i, l_y[i,j]]) * (u[i, l_y[i,j]+1, k] - u[i, l_y[i,j], k]) for i in range(n_features)) >= 
+                    (gp.quicksum(u[i, l_x[i,j], k] + (X[j,i] - x[i, l_x[i,j]]) / (x[i, l_x[i,j]+1] - x[i, l_x[i,j]]) * (u[i, l_x[i,j]+1, k] - u[i, l_x[i,j], k]) for i in range(n_features)) +
+                    sigma_plus_x[j] - sigma_minus_x[j]) - 
+                    (gp.quicksum(u[i, l_y[i,j], k] + (Y[j,i] - x[i, l_y[i,j]]) / (x[i, l_y[i,j]+1] - x[i, l_y[i,j]]) * (u[i, l_y[i,j]+1, k] - u[i, l_y[i,j], k]) for i in range(n_features)) +
+                    sigma_plus_y[j] - sigma_minus_y[j]) >= 
                     Maj * (1 - z[j, k])
                 )
 
+
         # Adding last constraint: the sum of the max values of u is equal to 1
+        # for k in range(self.n_clusters):
+        #     self.model.addConstr(gp.quicksum(u[i, n_pieces, k] for i in range(n_features))== 1)
+        # Modified one (to be discussed), we add the constraint that all last utility value is 1 for all clusters
         for k in range(self.n_clusters):
-            self.model.addConstr(gp.quicksum(u[i, n_pieces, k] for i in range(n_features))== 1)
+            for i in range(n_features):
+                self.model.addConstr(u[i, n_pieces, k] == 1)
 
         # Define the objective function of the MIP: minimize the sum of the underestimation and overestimation of the score function
         self.model.setObjective(gp.quicksum(sigma_minus_x[j] + sigma_plus_x[j] + sigma_minus_y[j] + sigma_plus_y[j] for j in range(n_samples)), GRB.MINIMIZE)
@@ -369,17 +383,18 @@ u_opt, z_opt = model_zerocluster.fit(X, Y)
 num_features = np.shape(X)[1]
 num_clusters = 2
 
+# initiate the plt figure with size 8,16
+fig, axs = plt.subplots(num_clusters, num_features, gridspec_kw={'width_ratios': [1]*num_features, 'height_ratios': [1]*num_clusters})
 for k in range(num_clusters):
-    plt.subplots(num_features, 1, figsize=(10, 10))
     for i in range(num_features):
-        plt.subplot(num_features, 1, i+1)
-        plt.plot(u_opt[i, :, k])
+        axs[k,i].plot(u_opt[i, :, k])
+        print(u_opt[i, :, k])
 
 plt.show()
 
 
-print(u_opt)
-print(z_opt)
+# print(u_opt)
+# print(z_opt)
 
 
 
