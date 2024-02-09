@@ -342,6 +342,9 @@ class HeuristicModel(BaseModel):
         return
 
     def instantiate_clusters(self, X, Y):
+        '''
+        Initialization of the clusters based on (x,y) pairs coordinates
+        '''
         self.clusters = dict()
         labels = apriori_clustering(X, Y, self.n_clusters)
         for k in range(self.n_clusters):
