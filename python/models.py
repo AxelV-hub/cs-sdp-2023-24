@@ -182,6 +182,7 @@ class TwoClustersMIP(BaseModel):
         """Instantiation of the MIP Variables - To be completed."""
         # create a model
         model = gp.Model("MIP")
+        model.Params.seed = self.seed
 
         return model
 
@@ -230,25 +231,25 @@ class TwoClustersMIP(BaseModel):
 
         # Constraint for the clusters, should choose only one cluster for each sample
         for j in range(n_samples):
-            self.model.addConstr(sum([z[j, k] for k in range(n_clusters)]) == 1)
+            self.model.addConstr(gp.quicksum([z[j, k] for k in range(n_clusters)]) == 1)
 
         # Constraint for the clusters, should choose only one cluster for each sample
         for k in range(n_clusters):
-            self.model.addConstr(sum([u[i, n_pieces, k] for i in range(n_features)]) == 1)
+            self.model.addConstr(gp.quicksum([u[i, n_pieces, k] for i in range(n_features)]) == 1)
 
         # Cut the abscissa axis into n_pieces intervals
-        x = np.zeros((n_features, n_pieces+1), dtype = float)
+        self.x = np.zeros((n_features, n_pieces+1), dtype = float)
         for i in range(n_features):
             for l in range(n_pieces+1):
-                x[i, l] = l / n_pieces
+                self.x[i, l] = l / n_pieces
 
         # Function to calculate utility
         def compute_utility(k, features, x_or_y,j):
             utility = 0
             for i, feature_value in enumerate(features):
                 for l in range(n_pieces):
-                    if x[i, l] <= feature_value <= x[i, l+1]:
-                        utility += u[i, l, k] + ((u[i, l+1, k]-u[i, l, k])/(x[i,l+1]-x[i,l])) * (feature_value - x[i,l]) + (sigma_plus[j,k,x_or_y] - sigma_minus[j,k,x_or_y])
+                    if self.x[i, l] <= feature_value <= self.x[i, l+1]:
+                        utility += u[i, l, k] + ((u[i, l+1, k]-u[i, l, k])/(self.x[i,l+1]-self.x[i,l])) * (feature_value - self.x[i,l]) + (sigma_plus[j,k,x_or_y] - sigma_minus[j,k,x_or_y])
                         break
             return utility
 
@@ -262,7 +263,7 @@ class TwoClustersMIP(BaseModel):
 
         # We update the model before adding abjective and optimizing
         self.model.update()
-        self.model.setObjective(sum([sigma_plus[j,k,x_or_y] + sigma_minus[j,k,x_or_y] for j in range(n_samples) for k in range(n_clusters) for x_or_y in [0,1]]), GRB.MINIMIZE)
+        self.model.setObjective(gp.quicksum([sigma_plus[j,k,x_or_y] + sigma_minus[j,k,x_or_y] for j in range(n_samples) for k in range(n_clusters) for x_or_y in [0,1]]), GRB.MINIMIZE)
 
         self.model.optimize()
 
@@ -281,6 +282,9 @@ class TwoClustersMIP(BaseModel):
         else:
             print('No solution')
 
+        self.u = u_opt
+        self.z = z_opt
+
         return u_opt, z_opt
 
 
@@ -292,12 +296,25 @@ class TwoClustersMIP(BaseModel):
         X: np.ndarray
             (n_samples, n_features) list of features of elements
         """
-        # To be completed
+        # Use self.u obtained by the fit method to predict the utility of X, we also use the self.x[i, l] for the abscissa axis
+        n_samples = X.shape[0]
+        n_features = X.shape[1]
+        utility = np.zeros((n_samples, self.n_clusters), dtype = float)
+        for j in range(n_samples):
+            for k in range(self.n_clusters):
+                utility[j, k] = 0
+                for i, feature_value in enumerate(X[j]):
+                    for l in range(self.n_pieces):
+                        if self.x[i, l] <= feature_value <= self.x[i, l+1]:
+                            utility[j, k] += self.u[i, l, k] + ((self.u[i, l+1, k]-self.u[i, l, k])/(self.x[i,l+1]-self.x[i,l])) * (feature_value - self.x[i,l])
+                            break
         # Do not forget that this method is called in predict_preference (line 42) and therefor should return well-organized data for it to work.
-        return
+        return utility
 
 
-
+# --------------------------------- #
+# --------------------------------- #
+# Temporary code for testing purposes
 import os
 import sys
 
@@ -335,6 +352,11 @@ plt.show()
 plt.hist(z_opt[:,0])
 plt.show()
 
+utility = model_zerocluster.predict_utility(X[300:305])
+print(utility)
+
+# --------------------------------- #
+# --------------------------------- #
 
 
 class HeuristicModel(BaseModel):
