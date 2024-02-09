@@ -199,94 +199,90 @@ class TwoClustersMIP(BaseModel):
         n_samples = X.shape[0]
         n_features = X.shape[1]
         n_pieces = self.n_pieces
+        n_clusters = self.n_clusters
 
-        # define the variables of the MIP
+        # We create the variable corresponding to the values of the utilies functions that we want to find
         u = {}
-        for k in range(self.n_clusters):
-            for i in range(self.n_features):
-                for l in range(self.n_pieces):
-                    u[k, i, l] = self.model.addVar(lb=0, ub=1, vtype=GRB.CONTINUOUS, name=f"u_{k}{i}{l}")
+        for i in range(n_features):
+            for l in range(n_pieces+1):
+                for k in range(n_clusters):
+                    u[i, l, k] = self.model.addVar(lb = 0, ub = 1, vtype=GRB.CONTINUOUS, name=f"u_{i}_{l}_{k}")
 
+        # We create the variable corresponding to the clusters, the value is 1 if it is in the corresponding cluster
         z = {}
-        for k in range(self.n_clusters):
+        for k in range(n_clusters):
             for j in range(n_samples):
                 z[j, k] = self.model.addVar(vtype=GRB.BINARY, name=f"z_{j}_{k}")
 
-        sigma_plus = self.model.addVar(lb=0, vtype=GRB.CONTINUOUS, name="sigma_plus") 
-        sigma_minus = self.model.addVar(lb=0, vtype=GRB.CONTINUOUS, name="sigma_minus")
-
-        # Constraints fonction de décision croissantes 
-        for i in range(self.n_features):
-            for k in range(self.n_clusters):
-                for l in range(self.n_pieces - 1):
-                    self.model.addConstr(u[k, i, l] <= u[k, i, l + 1])
-        
-        #Contrainte d'égalite <-> préférence
-
+        # We create the variables of surestimation and underestimation of the score function, that we want to minimize
+        sigma_plus = {}
+        sigma_minus = {}
         for j in range(n_samples):
-            self.model.addConstr(np.sum([z[j, k] for k in range(self.n_clusters)])==1)
+            for k in range(n_clusters):
+                for x_or_y in [0,1]:
+                    sigma_plus[j,k,x_or_y] = self.model.addVar(lb = 0, vtype=GRB.CONTINUOUS, name=f"sigma_plus_x_{j}_{k}_{x_or_y}")
+                    sigma_minus[j,k,x_or_y] = self.model.addVar(lb = 0, vtype=GRB.CONTINUOUS, name=f"sigma_minus_x_{j}_{k}_{x_or_y}")
 
-
-        # define some preliminary useful coefficients 
-        # define the min_i and max_i for each feature i, computed with X and Y, the value will be later used to calculate the score function
-        min_i = np.zeros(n_features)
-        max_i = np.zeros(n_features)
+        # We add the constraint : the utility functions are increasing
         for i in range(n_features):
-            min_i[i] = min(min(X[:, i]), min(Y[:, i]))
-            max_i[i] = max(max(X[:, i]), max(Y[:, i]))
+            for l in range(n_pieces):
+                for k in range(n_clusters):
+                    self.model.addConstr(u[i, l+1, k] - u[i, l, k] >= 0)
 
-        # define the intervals boundaries x_i_l for each feature i, and l from 0 to n_pieces, computed with min_i and max_i
-        x_i_l = np.zeros((n_features, n_pieces+1))
+        # Constraint for the clusters, should choose only one cluster for each sample
+        for j in range(n_samples):
+            self.model.addConstr(sum([z[j, k] for k in range(n_clusters)]) == 1)
+
+        # Constraint for the clusters, should choose only one cluster for each sample
+        for k in range(n_clusters):
+            self.model.addConstr(sum([u[i, n_pieces, k] for i in range(n_features)]) == 1)
+
+        # Cut the abscissa axis into n_pieces intervals
+        x = np.zeros((n_features, n_pieces+1), dtype = float)
         for i in range(n_features):
             for l in range(n_pieces+1):
-                x_i_l[i, l] = min_i[i] + l * (max_i[i] - min_i[i]) / n_pieces
+                x[i, l] = l / n_pieces
 
-        # define the score function, based on the alpha_i_l and max_i and min_i
-        def score_function(x_i, alpha_i_l):
-            # define the interval l_i of x_i_l in which x_i is located
-            l_i = np.zeros(n_features)
-            for i in range(n_features):
-                l_i[i] = int(n_pieces * (x_i - min_i[i]) / (max_i[i] - min_i[i]))  # value of l_i between 0 and n_pieces
+        # Function to calculate utility
+        def compute_utility(k, features, x_or_y,j):
+            utility = 0
+            for i, feature_value in enumerate(features):
+                for l in range(n_pieces):
+                    if x[i, l] <= feature_value <= x[i, l+1]:
+                        utility += u[i, l, k] + ((u[i, l+1, k]-u[i, l, k])/(x[i,l+1]-x[i,l])) * (feature_value - x[i,l]) + (sigma_plus[j,k,x_or_y] - sigma_minus[j,k,x_or_y])
+                        break
+            return utility
 
-            # define the score function for each feature i 
-            score = 0
-            for i in range(n_features):
-                score += alpha_i_l[i, l_i[i]] + (x_i - x_i_l[i, l_i]) / (x_i_l[i, l_i+1] - x_i_l[i, l_i]) * (alpha_i_l[i, l_i[i]+1] - alpha_i_l[i, l_i[i]])
+        # Adding the constraints for choosing the right cluster and the right utility function
+        Maj = 100
+        epsilon = 10**-3
+        for j in range(n_samples):
+            for k in range(n_clusters):
+                self.model.addConstr(compute_utility(k, X[j],0,j) - compute_utility(k, Y[j],1,j) - epsilon >= Maj * (z[j,k] - 1))
+                self.model.addConstr(compute_utility(k, X[j],0,j) - compute_utility(k, Y[j],1,j) + epsilon <= Maj * z[j,k])
 
-            return score
+        # We update the model before adding abjective and optimizing
+        self.model.update()
+        self.model.setObjective(sum([sigma_plus[j,k,x_or_y] + sigma_minus[j,k,x_or_y] for j in range(n_samples) for k in range(n_clusters) for x_or_y in [0,1]]), GRB.MINIMIZE)
 
-        # define the constraints of the MIP
-        # constraint 1: the sum of the alpha_i_l over i with l fixed at n_pieces is equal to 1
-        self.model.addConstr(gp.quicksum(alpha_i_l[t, n_pieces] for t in range(n_samples)) == 1)
-
-        # constraint 2: alpha_i_l is between 0 and 1 for all i and l
-        # self.model.addConstrs(alpha_i_l[i, l] >= 0 for i in range(n_features) for l in range(n_pieces))
-
-        # constraint 3: alpha_i_l[i, l] <= alpha_i_l[i, l+1] for all i and l
-        self.model.addConstrs(alpha_i_l[i, l] <= alpha_i_l[i, l+1] for i in range(n_features) for l in range(n_pieces))
-
-        # constraint 4: for each pair of X[j],Y[j], score_function(X[j]) + sigma_j[0, j] >= score_function(Y[j]) + sigma_j[1, j]
-        self.model.addConstrs(score_function(X[j,:], alpha_i_l) + sigma_j[0, j] >= score_function(Y[j,:], alpha_i_l) + sigma_j[1, j] for j in range(n_samples))
-
-        # define the objective function of the MIP
-        # objective function: minimize the sum of abs(sigma_j)
-        self.model.setObjective(gp.quicksum(abs(sigma_j[k,j]) for k in [0,1] for j in range(n_samples)), GRB.MINIMIZE)
-
-        # optimize the model
         self.model.optimize()
 
-        # get the optimal values of alpha_i_l 
+        # Get the optimal values of u and z 
         if self.model.status == GRB.OPTIMAL:
             print('Optimal found')
-            alpha_i_l_opt = np.zeros((n_features, n_pieces))
-            sigma_j_opt = np.zeros((2, n_samples))
+            u_opt = np.zeros((n_features, n_pieces+1, n_clusters))
+            z_opt = np.zeros((n_samples, n_clusters))
             for i in range(n_features):
-                for l in range(n_pieces):
-                    alpha_i_l_opt[i, l] = x[i, l].x
+                for l in range(n_pieces+1):
+                    for k in range(n_clusters):
+                        u_opt[i, l, k] = u[i, l, k].x
+            for j in range(n_samples):
+                for k in range(n_clusters):
+                    z_opt[j, k] = z[j, k].x
         else:
             print('No solution')
 
-        return alpha_i_l_opt
+        return u_opt, z_opt
 
 
     def predict_utility(self, X):
@@ -313,14 +309,32 @@ import numpy as np
 from data import Dataloader
 import metrics
 
+import matplotlib.pyplot as plt
+
 
 # data_loader = Dataloader("../data\dataset_4") # Specify path to the dataset you want to load
 # X, Y = data_loader.load()
 
-# # model = RandomExampleModel() # Instantiation of the model with hyperparameters, if needed
-# model = TwoClustersMIP(n_pieces=5, n_clusters=1)
-# model.fit(X, Y) 
+# model = RandomExampleModel() # Instantiation of the model with hyperparameters, if needed
+model_zerocluster = TwoClustersMIP(n_pieces=5, n_clusters=2)
+u_opt, z_opt = model_zerocluster.fit(X[:300], Y[:300]) 
 
+# ploting the utility functions for each feature and each cluster, one figure by cluster, with a grid of each utility function
+num_features = np.shape(X)[1]
+num_clusters = 2
+
+# initiate the plt figure with size 8,16
+fig, axs = plt.subplots(num_clusters, num_features, gridspec_kw={'width_ratios': [1]*num_features, 'height_ratios': [1]*num_clusters})
+for k in range(num_clusters):
+    for i in range(num_features):
+        axs[k,i].plot(u_opt[i, :, k])
+        print(u_opt[i, :, k])
+
+plt.show()
+
+# plot the histogram of z_opt
+plt.hist(z_opt[:,0])
+plt.show()
 
 
 
