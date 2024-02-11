@@ -390,7 +390,9 @@ class HeuristicModel(BaseModel):
             return u_opt
 
         # For the initial iteration, we use the a posteriori clustering to compute the utility functions
+        self.u_hist = []  # used to analyse the convergence of the utility functions afterwards
         self.u = compute_utility(clusters)
+        self.u_hist.append(self.u)
 
         # We can refine the clusters by changing the cluster of samples that are not well explained by the utility functions, and recompute the utility functions
         if self.n_iterations > 1:
@@ -401,7 +403,8 @@ class HeuristicModel(BaseModel):
                     if cluster_predicted[j] != clusters[j]:
                         clusters[j] = cluster_predicted[j]
                 # Then we recompute the utility functions with the new clusters
-                self.u = compute_utility(clusters)                        
+                self.u = compute_utility(clusters)                 
+                self.u_hist.append(self.u)       
 
 
 
