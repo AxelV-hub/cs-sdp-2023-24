@@ -316,7 +316,7 @@ class HeuristicModel(BaseModel):
     You have to encapsulate your code within this class that will be called for evaluation.
     """
 
-    def __init__(self, n_pieces, n_clusters, clustering_method = "difference_KMeans_L2", n_iterations = 1):
+    def __init__(self, n_clusters=2, n_pieces=5, clustering_method = "difference_KMeans_L2", n_iterations = 10):
         """Initialization of the Heuristic Model.
         """
         self.seed = 123
@@ -390,9 +390,7 @@ class HeuristicModel(BaseModel):
             return u_opt
 
         # For the initial iteration, we use the a posteriori clustering to compute the utility functions
-        self.u_hist = []  # used to analyse the convergence of the utility functions afterwards
         self.u = compute_utility(clusters)
-        self.u_hist.append(self.u)
 
         # We can refine the clusters by changing the cluster of samples that are not well explained by the utility functions, and recompute the utility functions
         if self.n_iterations > 1:
