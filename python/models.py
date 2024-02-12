@@ -165,7 +165,7 @@ class TwoClustersMIP(BaseModel):
     You have to encapsulate your code within this class that will be called for evaluation.
     """
 
-    def __init__(self, n_pieces, n_clusters):
+    def __init__(self, n_pieces=5, n_clusters=2):
         """Initialization of the MIP Variables
 
         Parameters
