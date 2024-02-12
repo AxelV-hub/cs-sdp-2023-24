@@ -41,7 +41,7 @@ if __name__ == "__main__":
     print(train_indexes, test_indexes)
     X_train = X[train_indexes]
     Y_train = Y[train_indexes]
-    model = HeuristicModel(n_clusters=3)
+    model = HeuristicModel(n_clusters=2)
     model.fit(X_train, Y_train)
 
     X_test = X[test_indexes]
