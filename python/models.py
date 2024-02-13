@@ -402,7 +402,7 @@ class HeuristicModel(BaseModel):
                         clusters[j] = cluster_predicted[j]
                 # Then we recompute the utility functions with the new clusters
                 self.u = compute_utility(clusters)                 
-                self.u_hist.append(self.u)       
+                       
 
 
 
